@@ -228,7 +228,7 @@ def ask_ai_conversational(messages):
                 "model": "deepseek-chat",
                 "messages": messages,
                 "temperature": 0.75,
-                "max_tokens": 2000  # Unleashed depth
+                "max_tokens": 2000
             },
             timeout=45
         )
@@ -265,7 +265,7 @@ def chat_web():
     
     return render_template_string(HTML, chat_log=chat_display)
 
-# ===== TELEGRAM BOT =====
+# ===== TELEGRAM BOT (STRICT HABIT LOGGING) =====
 async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     chat_id = update.effective_chat.id
@@ -277,56 +277,64 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         nums = re.findall(r'\d+', text)
         return int(nums[0]) if nums else default
 
-    # --- HABIT LOGGING ---
-    if "💧" in text:
+    # --- STRICT HABIT LOGGING (Only if EXACT MATCH) ---
+    if text.strip() in ["💧", "💧 Water", "Water"]:
         c.execute("INSERT INTO logs (timestamp, chat_id, water) VALUES (?,?,?)", (ts, chat_id, 1))
         conn.commit(); conn.close()
-        await update.message.reply_text("💧 +1 Water.")
+        await update.message.reply_text("💧 +1 Water logged.")
         return
-    if "🧘" in text or "meditate" in text.lower():
+    
+    if text.strip().startswith("🧘") or text.lower().strip() in ["meditate", "meditation"]:
         mins = extract_number(30)
         c.execute("INSERT INTO logs (timestamp, chat_id, meditation_minutes) VALUES (?,?,?)", (ts, chat_id, mins))
         conn.commit(); conn.close()
         await update.message.reply_text(f"🧘 {mins} min meditation logged.")
         return
-    if "🏋️" in text or "exercise" in text.lower():
+    
+    if text.strip().startswith("🏋️") or text.lower().strip() in ["exercise", "workout"]:
         mins = extract_number(15)
         c.execute("INSERT INTO logs (timestamp, chat_id, exercise_minutes) VALUES (?,?,?)", (ts, chat_id, mins))
         conn.commit(); conn.close()
         await update.message.reply_text(f"🏋️ {mins} min exercise logged.")
         return
-    if "🍎" in text or "meal" in text.lower():
+    
+    if text.strip() in ["🍎", "🍎 Healthy Meal", "meal"]:
         c.execute("INSERT INTO logs (timestamp, chat_id, food_quality) VALUES (?,?,?)", (ts, chat_id, 4))
         conn.commit(); conn.close()
         await update.message.reply_text("🍎 Healthy meal logged.")
         return
-    if "😊" in text or "mood" in text.lower():
+    
+    if text.strip().startswith("😊") or text.lower().strip() in ["mood"]:
         score = extract_number(4)
         score = max(1, min(5, score))
         c.execute("INSERT INTO logs (timestamp, chat_id, mood) VALUES (?,?,?)", (ts, chat_id, score))
         conn.commit(); conn.close()
         await update.message.reply_text(f"😊 Mood {score}/5 logged.")
         return
-    if "😴" in text or "sleep" in text.lower():
+    
+    if text.strip().startswith("😴") or text.lower().strip() in ["sleep"]:
         hrs = extract_number(7)
         c.execute("INSERT INTO logs (timestamp, chat_id, sleep) VALUES (?,?,?)", (ts, chat_id, float(hrs)))
         conn.commit(); conn.close()
         await update.message.reply_text(f"😴 {hrs} hrs sleep logged.")
         return
-    if "🧠" in text or "urge" in text.lower():
+    
+    if text.strip().startswith("🧠") or text.lower().strip() in ["urge", "craving"]:
         intensity = extract_number(3)
         intensity = max(1, min(5, intensity))
         c.execute("INSERT INTO logs (timestamp, chat_id, craving_intensity) VALUES (?,?,?)", (ts, chat_id, intensity))
         conn.commit(); conn.close()
         await update.message.reply_text(f"🧠 Urge logged: {intensity}/5. Observing is winning.")
         return
-    if "🌅" in text or "morning" in text.lower():
+    
+    if text.strip().startswith("🌅") or text.lower().strip() in ["morning kit", "morning"]:
         c.execute("INSERT INTO logs (timestamp, chat_id, water, meditation_minutes, exercise_minutes) VALUES (?,?,?,?,?)", 
                   (ts, chat_id, 1, 30, 15))
         conn.commit(); conn.close()
         await update.message.reply_text("🌅 Morning Kit logged: Water, 30min Sit, 15min Movement.")
         return
-    if "📊" in text or "dashboard" in text.lower():
+    
+    if text.strip().startswith("📊") or text.lower().strip() in ["dashboard", "stats"]:
         c.execute("SELECT AVG(water), AVG(mood), AVG(sleep), AVG(meditation_minutes), AVG(exercise_minutes), AVG(food_quality) FROM logs WHERE chat_id=?", (chat_id,))
         row = c.fetchone()
         streak = calculate_streak(chat_id)
@@ -348,7 +356,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     conn.close()
 
-    # --- AI CHAT (WITH MEMORY) ---
+    # --- AI CHAT (UNLEASHED) ---
     if 'chat_history' not in ctx.user_data:
         ctx.user_data['chat_history'] = []
     
