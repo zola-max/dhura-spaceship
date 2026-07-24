@@ -230,7 +230,7 @@ def ask_ai_conversational(messages):
                 "temperature": 0.75,
                 "max_tokens": 2000
             },
-            timeout=45
+            timeout=90
         )
         return resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
