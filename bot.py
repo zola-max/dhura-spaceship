@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from flask import Flask, request, render_template_string, redirect, session
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
+import telegram  # for catching Conflict error
 
 # ===== CONFIG =====
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -11,7 +12,7 @@ WEB_PASS = os.environ.get("WEB_PASSWORD", "admin123")
 DB_PATH = "/app/data/health.db"
 os.makedirs("/app/data", exist_ok=True)
 
-# ===== UNLEASHED SYSTEM PROMPT WITH FORMATTING INSTRUCTIONS =====
+# ===== UNLEASHED SYSTEM PROMPT WITH FORMATTING =====
 SYSTEM_PROMPT = """You are Dhura, a high-agency Strategic Co-Pilot and Creative Architect.
 
 **CRITICAL RESPONSE FORMATTING RULES:**
@@ -222,7 +223,7 @@ def ask_ai_conversational(messages):
     if not DEEPSEEK_API_KEY:
         return "DeepSeek API key not set. Please add it to environment variables."
     
-    for attempt in range(2):  # Retry once if it fails
+    for attempt in range(2):
         try:
             resp = requests.post(
                 "https://api.deepseek.com/v1/chat/completions",
@@ -236,13 +237,13 @@ def ask_ai_conversational(messages):
                     "temperature": 0.75,
                     "max_tokens": 2000
                 },
-                timeout=120  # 2 minutes for deep, formatted responses
+                timeout=120
             )
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
         except requests.exceptions.Timeout:
             if attempt == 0:
-                continue  # Retry once
+                continue
             else:
                 return "The request took too long. Please try again or use the Web UI for complex questions."
         except Exception as e:
@@ -277,7 +278,7 @@ def chat_web():
     
     return render_template_string(HTML, chat_log=chat_display)
 
-# ===== TELEGRAM BOT (STRICT HABIT LOGGING + FORMATTED AI) =====
+# ===== TELEGRAM BOT =====
 async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     chat_id = update.effective_chat.id
@@ -369,7 +370,6 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     # --- AI CHAT (UNLEASHED + FORMATTED) ---
-    # Send "typing" indicator immediately so the user knows it's working
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
     if 'chat_history' not in ctx.user_data:
@@ -386,8 +386,6 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if len(ctx.user_data['chat_history']) > 40:
         ctx.user_data['chat_history'] = ctx.user_data['chat_history'][-40:]
     
-    # Telegram doesn't support Markdown complexly, but we can do basic bold/italic
-    # We'll just send it as plain text with formatting symbols
     await update.message.reply_text(reply, parse_mode=None)
 
 async def reset_memory(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -405,8 +403,23 @@ def run_telegram():
     ]
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
     app.add_handler(CommandHandler("reset", reset_memory))
-    print("🚀 Telegram Bot is live with v2.0 (Formatting + Typing Indicator). /reset to clear memory.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    print("🚀 Telegram Bot is live with v2.0. /reset to clear memory.")
+    
+    # Retry on Conflict (duplicate instance)
+    for attempt in range(1, 6):
+        try:
+            print(f"Attempt {attempt} to start polling...")
+            app.run_polling(allowed_updates=Update.ALL_TYPES)
+            break
+        except telegram.error.Conflict as e:
+            print(f"Conflict: {e}. Waiting {attempt*5} seconds and retrying...")
+            time.sleep(attempt * 5)
+            continue
+        except Exception as e:
+            print(f"Unexpected error: {e}. Exiting.")
+            break
+    else:
+        print("Failed to start Telegram polling after 5 attempts. Please check manually.")
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
