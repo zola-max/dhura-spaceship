@@ -11,20 +11,24 @@ WEB_PASS = os.environ.get("WEB_PASSWORD", "admin123")
 DB_PATH = "/app/data/health.db"
 os.makedirs("/app/data", exist_ok=True)
 
-# ===== UNLEASHED SYSTEM PROMPT =====
-SYSTEM_PROMPT = """You are Dhura, a high-agency Strategic Co-Pilot and Creative Architect. You are not a chatbot; you are a collaborative partner in building a meaningful life, career, and mind.
+# ===== UNLEASHED SYSTEM PROMPT WITH FORMATTING INSTRUCTIONS =====
+SYSTEM_PROMPT = """You are Dhura, a high-agency Strategic Co-Pilot and Creative Architect.
+
+**CRITICAL RESPONSE FORMATTING RULES:**
+1. **Never send a wall of text.** Always break responses into clear sections.
+2. Use **bold headers** for each major section (e.g., **Morning Routine:**, **Project Block 1:**).
+3. Use numbered lists (1., 2., 3.) for sequential steps.
+4. Use bullet points (- or •) for options or parallel items.
+5. Use *italics* for emphasis or quotes.
+6. Leave a blank line between sections for readability.
 
 **Your Core Operating Principles:**
-1. **Intent First:** Before you respond, analyze the user's intent. Are they venting, brainstorming, debugging, planning, seeking wisdom, or analyzing a problem? Adjust your style instantly.
-2. **Contextual Depth:** Match the user's energy. If they give a short question, give a sharp, efficient answer. If they give a complex, messy thought, respond with layered, structured reasoning.
-3. **Multi-Dimensional Intelligence:** You possess encyclopedic knowledge, system-level thinking, emotional intelligence, and deep strategic foresight. Use all of them.
-4. **Challenge & Build:** Do not just agree. Challenge assumptions respectfully. Offer counter-frameworks. Build upon their ideas to take them further than they expected.
-5. **Toolkit Approach:** The Dhamma (Four Noble Truths, Eightfold Path) is a profound psychological framework in your toolkit, but it is ONE tool. Use modern psychology, stoicism, systems theory, and practical logic freely. Integrate Dhamma only when it is the best lens for the moment.
-6. **Ultimate Depth:** Do not give generic advice. Zoom in on the specifics of the user's words. If they mention a project, ask about constraints, timelines, and failure points. If they mention pain, explore the somatic and narrative roots.
-7. **Clarifying Questions:** If the user is vague, ask 1-2 precise clarifying questions to ensure you are solving the REAL problem, not the surface problem.
-8. **No Artificial Limits:** There is no word limit. Think step-by-step internally, and output the refined, high-density response. Over-deliver on actionable insight.
-9. **Structure for Readability:** In Telegram, use plain text with line breaks. In the Web UI, you can use Markdown/HTML tags for emphasis. Always keep it clear and scannable.
-10. **Project Development:** When the user discusses a project (coding, writing, planning), ask about the current blockers, the ideal outcome, and the next micro-step. Act as a senior architect."""
+1. **Intent First:** Analyze the user's intent. Are they venting, brainstorming, debugging, planning, or seeking wisdom?
+2. **Contextual Depth:** Match the user's energy. Short question = sharp answer. Complex thought = layered reasoning.
+3. **Challenge & Build:** Challenge assumptions respectfully. Offer counter-frameworks. Build upon their ideas.
+4. **Toolkit Approach:** Use modern psychology, stoicism, systems theory, and Dhamma freely. Integrate Dhamma only when it is the best lens.
+5. **Project Development:** When discussing a project, ask about blockers, ideal outcomes, and the next micro-step. Act as a senior architect.
+6. **No Artificial Limits:** Think step-by-step. Over-deliver on actionable insight."""
 
 # ===== DATABASE SETUP =====
 def init_db():
@@ -213,28 +217,36 @@ def log_quick():
     conn.commit(); conn.close()
     return redirect('/')
 
-# ===== CONVERSATIONAL AI =====
+# ===== CONVERSATIONAL AI WITH AUTO-RETRY =====
 def ask_ai_conversational(messages):
     if not DEEPSEEK_API_KEY:
         return "DeepSeek API key not set. Please add it to environment variables."
-    try:
-        resp = requests.post(
-            "https://api.deepseek.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "deepseek-chat",
-                "messages": messages,
-                "temperature": 0.75,
-                "max_tokens": 2000
-            },
-            timeout=90
-        )
-        return resp.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        return f"I'm here. Let's work through this. (API error: {str(e)[:60]})"
+    
+    for attempt in range(2):  # Retry once if it fails
+        try:
+            resp = requests.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "deepseek-chat",
+                    "messages": messages,
+                    "temperature": 0.75,
+                    "max_tokens": 2000
+                },
+                timeout=120  # 2 minutes for deep, formatted responses
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except requests.exceptions.Timeout:
+            if attempt == 0:
+                continue  # Retry once
+            else:
+                return "The request took too long. Please try again or use the Web UI for complex questions."
+        except Exception as e:
+            return f"I'm here. Let's try a shorter question. (Error: {str(e)[:60]})"
 
 @flask_app.route('/chat', methods=['POST'])
 def chat_web():
@@ -265,7 +277,7 @@ def chat_web():
     
     return render_template_string(HTML, chat_log=chat_display)
 
-# ===== TELEGRAM BOT (STRICT HABIT LOGGING) =====
+# ===== TELEGRAM BOT (STRICT HABIT LOGGING + FORMATTED AI) =====
 async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     chat_id = update.effective_chat.id
@@ -277,7 +289,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         nums = re.findall(r'\d+', text)
         return int(nums[0]) if nums else default
 
-    # --- STRICT HABIT LOGGING (Only if EXACT MATCH) ---
+    # --- STRICT HABIT LOGGING ---
     if text.strip() in ["💧", "💧 Water", "Water"]:
         c.execute("INSERT INTO logs (timestamp, chat_id, water) VALUES (?,?,?)", (ts, chat_id, 1))
         conn.commit(); conn.close()
@@ -356,7 +368,10 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     conn.close()
 
-    # --- AI CHAT (UNLEASHED) ---
+    # --- AI CHAT (UNLEASHED + FORMATTED) ---
+    # Send "typing" indicator immediately so the user knows it's working
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    
     if 'chat_history' not in ctx.user_data:
         ctx.user_data['chat_history'] = []
     
@@ -371,7 +386,9 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if len(ctx.user_data['chat_history']) > 40:
         ctx.user_data['chat_history'] = ctx.user_data['chat_history'][-40:]
     
-    await update.message.reply_text(reply)
+    # Telegram doesn't support Markdown complexly, but we can do basic bold/italic
+    # We'll just send it as plain text with formatting symbols
+    await update.message.reply_text(reply, parse_mode=None)
 
 async def reset_memory(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if 'chat_history' in ctx.user_data:
@@ -388,7 +405,7 @@ def run_telegram():
     ]
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
     app.add_handler(CommandHandler("reset", reset_memory))
-    print("🚀 Telegram Bot is live with the Unleashed System Prompt. /reset to clear memory.")
+    print("🚀 Telegram Bot is live with v2.0 (Formatting + Typing Indicator). /reset to clear memory.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 def run_flask():
