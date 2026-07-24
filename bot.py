@@ -2,7 +2,7 @@ import os, json, sqlite3, threading, time, requests, re
 from datetime import datetime, timedelta
 from flask import Flask, request, render_template_string, redirect, session
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
 
 # ===== CONFIG =====
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -10,6 +10,21 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 WEB_PASS = os.environ.get("WEB_PASSWORD", "admin123")
 DB_PATH = "/app/data/health.db"
 os.makedirs("/app/data", exist_ok=True)
+
+# ===== UNLEASHED SYSTEM PROMPT =====
+SYSTEM_PROMPT = """You are Dhura, a high-agency Strategic Co-Pilot and Creative Architect. You are not a chatbot; you are a collaborative partner in building a meaningful life, career, and mind.
+
+**Your Core Operating Principles:**
+1. **Intent First:** Before you respond, analyze the user's intent. Are they venting, brainstorming, debugging, planning, seeking wisdom, or analyzing a problem? Adjust your style instantly.
+2. **Contextual Depth:** Match the user's energy. If they give a short question, give a sharp, efficient answer. If they give a complex, messy thought, respond with layered, structured reasoning.
+3. **Multi-Dimensional Intelligence:** You possess encyclopedic knowledge, system-level thinking, emotional intelligence, and deep strategic foresight. Use all of them.
+4. **Challenge & Build:** Do not just agree. Challenge assumptions respectfully. Offer counter-frameworks. Build upon their ideas to take them further than they expected.
+5. **Toolkit Approach:** The Dhamma (Four Noble Truths, Eightfold Path) is a profound psychological framework in your toolkit, but it is ONE tool. Use modern psychology, stoicism, systems theory, and practical logic freely. Integrate Dhamma only when it is the best lens for the moment.
+6. **Ultimate Depth:** Do not give generic advice. Zoom in on the specifics of the user's words. If they mention a project, ask about constraints, timelines, and failure points. If they mention pain, explore the somatic and narrative roots.
+7. **Clarifying Questions:** If the user is vague, ask 1-2 precise clarifying questions to ensure you are solving the REAL problem, not the surface problem.
+8. **No Artificial Limits:** There is no word limit. Think step-by-step internally, and output the refined, high-density response. Over-deliver on actionable insight.
+9. **Structure for Readability:** In Telegram, use plain text with line breaks. In the Web UI, you can use Markdown/HTML tags for emphasis. Always keep it clear and scannable.
+10. **Project Development:** When the user discusses a project (coding, writing, planning), ask about the current blockers, the ideal outcome, and the next micro-step. Act as a senior architect."""
 
 # ===== DATABASE SETUP =====
 def init_db():
@@ -32,6 +47,14 @@ def init_db():
     for col in ["meditation_minutes", "exercise_minutes", "food_quality", "craving_intensity"]:
         if col not in columns:
             c.execute(f"ALTER TABLE logs ADD COLUMN {col} INTEGER")
+    c.execute('''CREATE TABLE IF NOT EXISTS projects (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER,
+        project_name TEXT,
+        created_at TEXT,
+        status TEXT,
+        notes TEXT
+    )''')
     conn.commit()
     conn.close()
 
@@ -62,7 +85,7 @@ h2 { margin: 0 0 10px 0; font-weight: 400; }
 .btn-red { background: #ef4444; }
 .btn-teal { background: #14b8a6; }
 .btn-pink { background: #ec4899; }
-.chat-box { background: #11161e; border-radius: 12px; padding: 10px; height: 200px; overflow-y: auto; margin-bottom: 10px; font-size: 0.9rem; }
+.chat-box { background: #11161e; border-radius: 12px; padding: 10px; height: 350px; overflow-y: auto; margin-bottom: 10px; font-size: 0.9rem; line-height: 1.6; }
 .input-row { display: flex; gap: 8px; }
 .input-row input { flex: 1; padding: 12px; border-radius: 30px; border: none; background: #2a3340; color: white; }
 .input-row button { padding: 12px 20px; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; }
@@ -99,7 +122,7 @@ h2 { margin: 0 0 10px 0; font-weight: 400; }
 <div class="card">
   <div class="chat-box" id="chat">{{ chat_log|safe }}</div>
   <form method="post" action="/chat" class="input-row">
-    <input type="text" name="msg" placeholder="Type 'meditate 45' or vent..." required>
+    <input type="text" name="msg" placeholder="Vent, brainstorm, debug, or plan..." required>
     <button type="submit">Send</button>
   </form>
 </div>
@@ -152,7 +175,15 @@ def dashboard():
     html = html.replace('id="ex">0', f'id="ex">{int(ex or 0)}')
     html = html.replace('id="food">0', f'id="food">{int(food or 0)}')
     html = html.replace('id="streak">0', f'id="streak">{streak}')
-    return render_template_string(html, chat_log="🌱 Tap a button or type 'meditate 45'.")
+    chat_history = session.get('chat_history', [])
+    chat_display = ""
+    for m in chat_history[-12:]:
+        role = "You" if m['role'] == "user" else "Dhura"
+        content = m['content'].replace("\n", "<br>")
+        chat_display += f"<b>{role}:</b> {content}<br><br>"
+    if not chat_display:
+        chat_display = "🌱 How can I serve you today? I can help you think, build, debug, or reflect."
+    return render_template_string(html, chat_log=chat_display)
 
 @flask_app.route('/log')
 def log_quick():
@@ -182,14 +213,8 @@ def log_quick():
     conn.commit(); conn.close()
     return redirect('/')
 
-@flask_app.route('/chat', methods=['POST'])
-def chat_web():
-    if not session.get('auth'): return redirect('/')
-    msg = request.form.get('msg')
-    reply = ask_ai("You are Kalyāṇamitta, a beautiful Dhamma friend. Listen deeply. Keep it under 120 words.", msg)
-    return render_template_string(HTML, chat_log=f"<b>You:</b> {msg}<br><br><b>AI:</b> {reply}")
-
-def ask_ai(system, user):
+# ===== CONVERSATIONAL AI =====
+def ask_ai_conversational(messages):
     if not DEEPSEEK_API_KEY:
         return "DeepSeek API key not set. Please add it to environment variables."
     try:
@@ -201,18 +226,44 @@ def ask_ai(system, user):
             },
             json={
                 "model": "deepseek-chat",
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user}
-                ],
-                "temperature": 0.7,
-                "max_tokens": 800
+                "messages": messages,
+                "temperature": 0.75,
+                "max_tokens": 2000  # Unleashed depth
             },
-            timeout=30
+            timeout=45
         )
         return resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
-        return f"I'm here. Tell me more. (AI offline: {str(e)[:50]})"
+        return f"I'm here. Let's work through this. (API error: {str(e)[:60]})"
+
+@flask_app.route('/chat', methods=['POST'])
+def chat_web():
+    if not session.get('auth'): return redirect('/')
+    msg = request.form.get('msg')
+    if not msg:
+        return redirect('/')
+    
+    if 'chat_history' not in session:
+        session['chat_history'] = []
+    
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages.extend(session['chat_history'][-20:])
+    messages.append({"role": "user", "content": msg})
+    
+    reply = ask_ai_conversational(messages)
+    
+    session['chat_history'].append({"role": "user", "content": msg})
+    session['chat_history'].append({"role": "assistant", "content": reply})
+    if len(session['chat_history']) > 40:
+        session['chat_history'] = session['chat_history'][-40:]
+    
+    chat_display = ""
+    for m in session['chat_history'][-12:]:
+        role = "You" if m['role'] == "user" else "Dhura"
+        content = m['content'].replace("\n", "<br>")
+        chat_display += f"<b>{role}:</b> {content}<br><br>"
+    
+    return render_template_string(HTML, chat_log=chat_display)
 
 # ===== TELEGRAM BOT =====
 async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -226,6 +277,7 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         nums = re.findall(r'\d+', text)
         return int(nums[0]) if nums else default
 
+    # --- HABIT LOGGING ---
     if "💧" in text:
         c.execute("INSERT INTO logs (timestamp, chat_id, water) VALUES (?,?,?)", (ts, chat_id, 1))
         conn.commit(); conn.close()
@@ -266,13 +318,13 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         intensity = max(1, min(5, intensity))
         c.execute("INSERT INTO logs (timestamp, chat_id, craving_intensity) VALUES (?,?,?)", (ts, chat_id, intensity))
         conn.commit(); conn.close()
-        await update.message.reply_text(f"🧠 Urge logged: {intensity}/5. You are observing, not acting.")
+        await update.message.reply_text(f"🧠 Urge logged: {intensity}/5. Observing is winning.")
         return
     if "🌅" in text or "morning" in text.lower():
         c.execute("INSERT INTO logs (timestamp, chat_id, water, meditation_minutes, exercise_minutes) VALUES (?,?,?,?,?)", 
                   (ts, chat_id, 1, 30, 15))
         conn.commit(); conn.close()
-        await update.message.reply_text("🌅 Morning Kit logged: 💧 Water, 🧘 30min Sit, 🏋️ 15min Movement.")
+        await update.message.reply_text("🌅 Morning Kit logged: Water, 30min Sit, 15min Movement.")
         return
     if "📊" in text or "dashboard" in text.lower():
         c.execute("SELECT AVG(water), AVG(mood), AVG(sleep), AVG(meditation_minutes), AVG(exercise_minutes), AVG(food_quality) FROM logs WHERE chat_id=?", (chat_id,))
@@ -295,9 +347,30 @@ async def handle_msg(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     conn.close()
-    reply = ask_ai("You are Kalyāṇamitta. Listen deeply. No advice unless asked. Under 120 words.", text)
+
+    # --- AI CHAT (WITH MEMORY) ---
+    if 'chat_history' not in ctx.user_data:
+        ctx.user_data['chat_history'] = []
+    
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages.extend(ctx.user_data['chat_history'][-20:])
+    messages.append({"role": "user", "content": text})
+    
+    reply = ask_ai_conversational(messages)
+    
+    ctx.user_data['chat_history'].append({"role": "user", "content": text})
+    ctx.user_data['chat_history'].append({"role": "assistant", "content": reply})
+    if len(ctx.user_data['chat_history']) > 40:
+        ctx.user_data['chat_history'] = ctx.user_data['chat_history'][-40:]
+    
     await update.message.reply_text(reply)
 
+async def reset_memory(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if 'chat_history' in ctx.user_data:
+        ctx.user_data['chat_history'] = []
+    await update.message.reply_text("🧹 Memory wiped. We start fresh. What's on your mind?")
+
+# ===== BOT MAIN =====
 def run_telegram():
     app = Application.builder().token(TOKEN).build()
     keyboard = [
@@ -306,10 +379,10 @@ def run_telegram():
         ["🌅 Morning Kit", "🧠 Urge Surf 3", "📊 Dashboard"]
     ]
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
-    print("🚀 Telegram Bot is live.")
+    app.add_handler(CommandHandler("reset", reset_memory))
+    print("🚀 Telegram Bot is live with the Unleashed System Prompt. /reset to clear memory.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-# ===== MAIN =====
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
